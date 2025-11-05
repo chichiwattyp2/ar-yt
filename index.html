@@ -1,11 +1,9 @@
 <html>
 <head>
     <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
-    <script src="js/YouTubeToHtml5.min.js"></script>
     <title>Youtube Video in AFrame: Simple Videos</title>
 </head>
 <body>
-    <video data-yt2html5="" style="display:none"></video>
     <input type="text" id="myText" value="Enter Youtube URL" size="40" onclick="reset()"
         style="position: absolute; z-index: 3; left: 50%; bottom: 60px; transform: translate(-50%, -50%); margin: 0 auto;">
     <button type="button" onclick="addUrl()"
@@ -40,72 +38,159 @@
     var pauseVideo = document.querySelector("#pauseButton");
     var stopVideo = document.querySelector("#stopButton");
     // Video
-    var videoSource = document.querySelector("video");
     var tempVideo = document.querySelector("#tempVideo");
     var videoHolder = document.querySelector("a-plane");
+    var currentVideoId = null;
+
+    // Invidious instances to try (public instances)
+    const invidiousInstances = [
+        'https://invidious.fdn.fr',
+        'https://invidious.nerdvpn.de',
+        'https://inv.tux.pizza',
+        'https://invidious.privacyredirect.com',
+        'https://y.com.sb'
+    ];
+
     function reset() {
         document.getElementById("myText").value = "";
     }
-    function addUrl() {
-        var x = document.getElementById("myText").value;
-        if (!x || x === "Enter Youtube URL") {
+
+    // Extract video ID from YouTube URL
+    function extractVideoId(url) {
+        const patterns = [
+            /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\?\/]+)/,
+            /^([a-zA-Z0-9_-]{11})$/
+        ];
+
+        for (let pattern of patterns) {
+            const match = url.match(pattern);
+            if (match && match[1]) {
+                return match[1];
+            }
+        }
+        return null;
+    }
+
+    // Try to get video URL from Invidious instances
+    async function getVideoUrlFromInvidious(videoId, instanceIndex = 0) {
+        if (instanceIndex >= invidiousInstances.length) {
+            throw new Error('All Invidious instances failed');
+        }
+
+        const instance = invidiousInstances[instanceIndex];
+        console.log(`Trying Invidious instance: ${instance}`);
+
+        try {
+            const response = await fetch(`${instance}/api/v1/videos/${videoId}`);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const data = await response.json();
+            console.log('Invidious response:', data);
+
+            // Look for adaptive formats with audio
+            const formats = data.adaptiveFormats || [];
+
+            // Try to find a good quality video with audio
+            const qualities = ['720p', '480p', '360p'];
+            for (let quality of qualities) {
+                const format = formats.find(f =>
+                    f.qualityLabel === quality &&
+                    f.type && f.type.includes('video/mp4') &&
+                    f.url
+                );
+                if (format) {
+                    console.log(`Found ${quality} format:`, format);
+                    return { url: format.url, format: format };
+                }
+            }
+
+            // Fallback: try formatStreams (combined video+audio)
+            if (data.formatStreams && data.formatStreams.length > 0) {
+                const format = data.formatStreams.find(f =>
+                    f.qualityLabel &&
+                    f.type && f.type.includes('video/mp4') &&
+                    f.url
+                );
+                if (format) {
+                    console.log('Found combined format:', format);
+                    return { url: format.url, format: format };
+                }
+            }
+
+            throw new Error('No suitable video format found');
+        } catch (error) {
+            console.error(`Failed with instance ${instance}:`, error);
+            // Try next instance
+            return getVideoUrlFromInvidious(videoId, instanceIndex + 1);
+        }
+    }
+
+    async function addUrl() {
+        const input = document.getElementById("myText").value;
+        if (!input || input === "Enter Youtube URL") {
             alert("Please enter a valid YouTube URL");
             return;
         }
 
-        videoSource.setAttribute("data-yt2html5", x);
+        const videoId = extractVideoId(input);
+        if (!videoId) {
+            alert("Invalid YouTube URL. Please enter a valid URL like:\nhttps://www.youtube.com/watch?v=VIDEO_ID\nor\nhttps://youtu.be/VIDEO_ID");
+            return;
+        }
 
-        const controller = new YouTubeToHtml5({
-            withAudio: true, // Filter streams to those with audio channels
-            formats: ['720p', '360p', '1080p'] // Try 720p first, then 360p as fallback
-        });
+        console.log('Extracted video ID:', videoId);
+        currentVideoId = videoId;
 
-        controller.addFilter('request.url', function (url) {
-            return `${url}&cache_bust=${(new Date()).getTime()}`;
-        });
+        // Show loading message
+        const loadingMsg = document.createElement('div');
+        loadingMsg.id = 'loading-msg';
+        loadingMsg.style.cssText = 'position: absolute; z-index: 4; left: 50%; top: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.8); color: white; padding: 20px; border-radius: 10px; font-family: Arial;';
+        loadingMsg.textContent = 'Loading video...';
+        document.body.appendChild(loadingMsg);
 
-        // Add a filter to intercept the video source
-        controller.addFilter('video.source', function (src) {
-            console.log('Video source URL:', src);
-            return src;
-        });
+        try {
+            const result = await getVideoUrlFromInvidious(videoId);
+            console.log('Got video URL:', result.url);
 
-        // Add action after API call
-        controller.addAction('api.after', function(element) {
-            console.log('YouTube metadata loaded');
-            // Wait a bit for the src to be set, then load it
-            setTimeout(() => {
-                if (videoSource.src) {
-                    console.log('Setting video source to:', videoSource.src);
-                    // Use the direct URL from YouTubeToHtml5 (no CORS proxy needed)
-                    tempVideo.setAttribute("src", videoSource.src);
-                    videoHolder.setAttribute("color", "");
-                    videoHolder.setAttribute("src", "#tempVideo");
+            // Set video source
+            tempVideo.src = result.url;
+            tempVideo.crossOrigin = 'anonymous';
 
-                    // Wait for video to be loaded before playing
-                    tempVideo.addEventListener('loadeddata', function() {
-                        console.log('Video loaded successfully');
-                        tempVideo.play().catch(err => {
-                            console.error('Play error:', err);
-                        });
-                    }, { once: true });
+            // Wait for video to load
+            tempVideo.addEventListener('loadeddata', function() {
+                console.log('Video loaded successfully');
+                videoHolder.setAttribute("color", "");
+                videoHolder.setAttribute("src", "#tempVideo");
 
-                    // Add error handler
-                    tempVideo.addEventListener('error', function(e) {
-                        console.error('Video error:', e);
-                        alert('Failed to load video. YouTube may have restrictions on this video.');
-                    }, { once: true });
+                // Remove loading message
+                const msg = document.getElementById('loading-msg');
+                if (msg) msg.remove();
 
-                    tempVideo.load();
-                } else {
-                    console.error('No video source found');
-                    alert('Could not extract video URL. This video may be restricted or private.');
-                }
-            }, 1000);
-        });
+                // Auto-play
+                tempVideo.play().catch(err => {
+                    console.error('Play error:', err);
+                });
+            }, { once: true });
 
-        controller.load();
-        console.log('YouTube URL submitted:', x);
+            // Add error handler
+            tempVideo.addEventListener('error', function(e) {
+                console.error('Video error:', e);
+                const msg = document.getElementById('loading-msg');
+                if (msg) msg.remove();
+                alert('Failed to load video. This video may be restricted or unavailable.');
+            }, { once: true });
+
+            // Load the video
+            tempVideo.load();
+
+        } catch (error) {
+            console.error('Failed to load video:', error);
+            const msg = document.getElementById('loading-msg');
+            if (msg) msg.remove();
+            alert('Failed to load video from all sources. The video may be restricted, private, or the Invidious services may be temporarily unavailable.\n\nPlease try:\n1. A different video\n2. Again in a few minutes\n3. Checking if the video is public');
+        }
     }
     playVideo.addEventListener("click", function () {
         if (tempVideo.src) {
