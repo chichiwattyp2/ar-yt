@@ -48,35 +48,89 @@
     }
     function addUrl() {
         var x = document.getElementById("myText").value;
+        if (!x || x === "Enter Youtube URL") {
+            alert("Please enter a valid YouTube URL");
+            return;
+        }
+
         videoSource.setAttribute("data-yt2html5", x);
 
         const controller = new YouTubeToHtml5({
             withAudio: true, // Filter streams to those with audio channels
-            formats: ['1080p', '720p']
+            formats: ['720p', '360p', '1080p'] // Try 720p first, then 360p as fallback
         });
+
         controller.addFilter('request.url', function (url) {
             return `${url}&cache_bust=${(new Date()).getTime()}`;
         });
+
+        // Add a filter to intercept the video source
+        controller.addFilter('video.source', function (src) {
+            console.log('Video source URL:', src);
+            return src;
+        });
+
+        // Add action after API call
+        controller.addAction('api.after', function(element) {
+            console.log('YouTube metadata loaded');
+            // Wait a bit for the src to be set, then load it
+            setTimeout(() => {
+                if (videoSource.src) {
+                    console.log('Setting video source to:', videoSource.src);
+                    // Use the direct URL from YouTubeToHtml5 (no CORS proxy needed)
+                    tempVideo.setAttribute("src", videoSource.src);
+                    videoHolder.setAttribute("color", "");
+                    videoHolder.setAttribute("src", "#tempVideo");
+
+                    // Wait for video to be loaded before playing
+                    tempVideo.addEventListener('loadeddata', function() {
+                        console.log('Video loaded successfully');
+                        tempVideo.play().catch(err => {
+                            console.error('Play error:', err);
+                        });
+                    }, { once: true });
+
+                    // Add error handler
+                    tempVideo.addEventListener('error', function(e) {
+                        console.error('Video error:', e);
+                        alert('Failed to load video. YouTube may have restrictions on this video.');
+                    }, { once: true });
+
+                    tempVideo.load();
+                } else {
+                    console.error('No video source found');
+                    alert('Could not extract video URL. This video may be restricted or private.');
+                }
+            }, 1000);
+        });
+
         controller.load();
-        console.log(videoSource);
-        // Pre load video source to temp video
-        setTimeout(() => {
-            var src = "https://cors-anywhere.herokuapp.com/" + videoSource.src;
-            tempVideo.setAttribute("src", src);
-            videoHolder.setAttribute("color", "")
-            videoHolder.setAttribute("src", "#tempVideo");
-            tempVideo.play();
-        }, 3000);
+        console.log('YouTube URL submitted:', x);
     }
     playVideo.addEventListener("click", function () {
-        tempVideo.play();
+        if (tempVideo.src) {
+            tempVideo.play().catch(err => {
+                console.error('Play error:', err);
+                alert('Cannot play video. Please load a video first.');
+            });
+        } else {
+            alert('Please load a video first');
+        }
     })
     pauseVideo.addEventListener("click", function () {
-        tempVideo.pause();
+        if (tempVideo.src) {
+            tempVideo.pause();
+        } else {
+            alert('Please load a video first');
+        }
     })
     stopVideo.addEventListener("click", function () {
-        tempVideo.pause();
-        tempVideo.currentTime = 0;
+        if (tempVideo.src) {
+            tempVideo.pause();
+            tempVideo.currentTime = 0;
+        } else {
+            alert('Please load a video first');
+        }
     })
 </script>
 
